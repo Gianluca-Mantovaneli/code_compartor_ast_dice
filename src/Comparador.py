@@ -3,6 +3,7 @@ Comparador Híbrido de Código - Dice + AST
 """
 import ast
 import re
+import os
 from dataclasses import dataclass
 from typing import Dict
 
@@ -192,40 +193,19 @@ class CodeComparator:
             return 0.0
 
     @staticmethod
-    def _extract_ast_metrics(tree: ast.AST) -> Dict[str, int]:
-        """Extrai métricas básicas da AST"""
+    def _extract_ast_metrics(tree: ast.AST) -> Dict:
         metrics = {
-            'functions': 0,
-            'classes': 0,
-            'imports': 0,
-            'if_statements': 0,
-            'loops': 0,
-            'returns': 0,
-            'assignments': 0,
-            'calls': 0
+            'nodes_count': 0,
+            'structure': [],
+            'complexity': 0  # Ciclo de caminhos
         }
-
-        # Visitor simples
         for node in ast.walk(tree):
-            node_type = type(node).__name__
+            metrics['nodes_count'] += 1
+            # Registra a sequência de tipos de nós para comparar a "assinatura" do código
+            metrics['structure'].append(type(node).__name__)
 
-            if node_type == 'FunctionDef':
-                metrics['functions'] += 1
-            elif node_type == 'ClassDef':
-                metrics['classes'] += 1
-            elif node_type in ['Import', 'ImportFrom']:
-                metrics['imports'] += 1
-            elif node_type == 'If':
-                metrics['if_statements'] += 1
-            elif node_type in ['For', 'While']:
-                metrics['loops'] += 1
-            elif node_type == 'Return':
-                metrics['returns'] += 1
-            elif node_type in ['Assign', 'AugAssign']:
-                metrics['assignments'] += 1
-            elif node_type == 'Call':
-                metrics['calls'] += 1
-
+            if isinstance(node, (ast.If, ast.For, ast.While, ast.With)):
+                metrics['complexity'] += 1
         return metrics
 
     @staticmethod
@@ -256,6 +236,111 @@ class CodeComparator:
             'Diferenca Tamanho   ': abs(len(code1) - len(code2))
         }
 
+
+class CodeAnalyzer(CodeComparator):
+    """Analisa a complexidade e saúde de um único arquivo de código"""
+
+    def analyze(self, code: str) -> dict:
+        try:
+            tree = ast.parse(code)
+            metrics = self._extract_ast_metrics(tree)
+
+            # Cálculo de Complexidade Ciclomática simplificado:
+            # Base 1 + cada ponto de decisão (if, for, while, with, assert, except)
+            complexity = 1
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.If, ast.For, ast.While, ast.And, ast.Or, ast.ExceptHandler)):
+                    complexity += 1
+
+            return {
+                "complexidade_ciclomatica": complexity,
+                "total_funcoes": metrics['functions'],
+                "total_classes": metrics['classes'],
+                "linhas_totais": len(code.splitlines())
+            }
+        except SyntaxError:
+            return {"erro": "Falha ao processar código (Syntax Error)"}
+
+    def print_analysis(self, results: dict):
+        print(f"\n{Fore.MAGENTA}--- ANÁLISE DE COMPLEXIDADE ---")
+        if "erro" in results:
+            print(f"{Fore.RED}{results['erro']}")
+            return
+
+        comp = results['complexidade_ciclomatica']
+        # Escala de risco baseada em padrões de engenharia de software
+        color = Fore.GREEN if comp <= 10 else Fore.YELLOW if comp <= 20 else Fore.RED
+
+        print(f"Complexidade Ciclomática: {color}{comp}")
+        print(f"{Fore.WHITE}Status: {self._get_complexity_status(comp)}")
+        print(f"Total de Funções: {results['total_funcoes']}")
+        print(f"Total de Classes: {results['classes']}")
+        print(f"Linhas de Código: {results['linhas_totais']}")
+
+    @staticmethod
+    def _get_complexity_status(n):
+        if n <= 10: return "Código Simples (Baixo Risco)"
+        if n <= 20: return "Código Moderado"
+        if n <= 50: return "Código Complexo (Alto Risco)"
+        return "Código Muito Instável / Difícil de Testar"
+
+    def analyze_directory(self, path: str):
+        """Percorre um diretório e analisa todos os arquivos de código"""
+        total_files = 0
+        aggregate_results = {
+            "complexidade_acumulada": 0,
+            "total_funcoes": 0,
+            "total_classes": 0,
+            "total_linhas": 0,
+            "arquivos_analisados": []
+        }
+
+        # Percorre a pasta e subpastas
+        for root, _, files in os.walk(path):
+            for file in files:
+                if file.endswith('.java'):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            code = f.read()
+
+                        # Usa o analyze que criamos antes
+                        res = self.analyze(code)
+
+                        if "erro" not in res:
+                            total_files += 1
+                            aggregate_results["complexidade_acumulada"] += res["complexidade_ciclomatica"]
+                            aggregate_results["total_funcoes"] += res["total_funcoes"]
+                            aggregate_results["total_classes"] += res["total_classes"]
+                            aggregate_results["total_linhas"] += res["linhas_totais"]
+                            aggregate_results["arquivos_analisados"].append((file, res["complexidade_ciclomatica"]))
+                    except Exception as e:
+                        print(f"{Fore.RED}Erro ao ler {file}: {e}")
+
+        self._print_directory_report(aggregate_results, total_files)
+
+    @staticmethod
+    def _print_directory_report(data, count):
+        print(f"\n{Fore.CYAN}{'=' * 60}")
+        print(f"{Fore.YELLOW} ESTIMATIVA DE CÓDIGO GERADO (PROJETO COMPLETO)")
+        print(f"{Fore.CYAN}{'=' * 60}")
+
+        if count == 0:
+            print(f"{Fore.RED}Nenhum arquivo encontrado no diretório.")
+            return
+
+        print(f"{Fore.LIGHTWHITE_EX}Arquivos Processados : {count}")
+        print(f"Total de Linhas      : {data['total_linhas']}")
+        print(f"Total de Classes     : {data['total_classes']}")
+        print(f"Total de Funções     : {data['total_funcoes']}")
+        print(f"Média de Complexidade: {data['complexidade_acumulada'] / count:.2f}")
+
+        print(f"\n{Fore.LIGHTMAGENTA_EX}Top Arquivos mais Complexos:")
+        # Ordena os arquivos pela complexidade
+        sorted_files = sorted(data['arquivos_analisados'], key=lambda x: x[1], reverse=True)
+        for name, comp in sorted_files[:5]:
+            print(f"  - {name}: {comp}")
+        print(f"{Fore.CYAN}{'=' * 60}\n")
 
 def main():
     """Função principal para testes"""
@@ -308,15 +393,37 @@ def main():
                 print(f"{Fore.RED}Erro: {e}")
 
         elif choice == '3':
-            print("work in progress!!")
+            try:
+                file1 = input(f"{Fore.GREEN}Caminho do primeiro arquivo: ").strip()
+                file2 = input(f"{Fore.GREEN}Caminho do segundo arquivo: ").strip()
+                compare_directories(comparator,file1, file2)
+            except Exception as e:
+                print(f"{Fore.RED}Erro: {e}")
 
         elif choice == '4':
+            path = input(f"{Fore.GREEN}Digite o caminho da pasta do projeto: ").strip()
+            if os.path.exists(path):
+                analyzer = CodeAnalyzer()
+                analyzer.analyze_directory(path)
+            else:
+                print(f"{Fore.RED}Caminho não encontrado!")
+
+        elif choice == '0':
             print(f"{Fore.GREEN}Até logo!")
             break
 
         else:
             print(f"{Fore.RED}Opção inválida!")
 
+
+def compare_directories(self, path1: str, path2: str):
+    files1 = {f for f in os.listdir(path1) if f.endswith('.java')}
+    files2 = {f for f in os.listdir(path2) if f.endswith('.java')}
+
+    common = files1 & files2
+    for file in common:
+        res = self.compare_files(os.path.join(path1, file), os.path.join(path2, file))
+        print(f"Arquivo {file}: {res.final_score:.2%}")
 
 if __name__ == "__main__":
     main()
